@@ -58,5 +58,29 @@ def create_batch(Generator,
         return batch, mean_var
     
     return batch, None
+
+
+def weights_variancies(G, num_beans = 10):
+    points, variances = calculate_variance(G)
+    
+    bin_edges = np.linspace(0, 2 * np.pi, num_beans + 1)
+    bins_dict = {i + 1: bin_edges[i] for i in range(num_beans)}
+    bins = np.digitize(points, bin_edges)
+    
+    data_in_bins = {bin_num: {'points': [], 'variances': []} for bin_num in range(1, num_beans + 1)}
+    for i in range(len(variances)):
+        bin_num = bins[i]
+        data_in_bins[bin_num]['variances'].append(variances[i])
+        data_in_bins[bin_num]['points'].append(points[i])
+        
+    mean_variances_in_bins = {bin_num: np.mean(data['variances']) for bin_num, data in data_in_bins.items()}
+    total_sum_var = sum(mean_variances_in_bins.values())
+    weights = {bin_num: mean / total_sum_var for bin_num, mean in mean_variances_in_bins.items()}
+    
+    return weights, bins_dict
+    
+    
+
+    
     
     
