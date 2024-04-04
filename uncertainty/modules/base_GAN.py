@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 
-from .optimal_batch import calculate_variance, weights_variances
+from .optimal_batch import calculate_variance, weights_variances, calculate_metrics, variance4data
 from .animate import plot_sine, plot_training_progress, animated_bar_var_plot, create_gif
 
 
@@ -75,7 +75,7 @@ def D_train(
     # print(x_real, y_real, info)
     D_output = D(x_real, info.view(-1, 1))
     # print(f'x info: {info}')
-    
+    # print(D_output.grad_fn)
     if weights_interval:
         # weights = weights_variancies(G)
         D_real_loss = criterion(D_output, y_real, weights_interval, conditional_info = info)
@@ -94,6 +94,7 @@ def D_train(
     x_fake, y_fake = G(z, info.view(-1, 1)).view(-1, space_dimension), torch.zeros(x.size(0), 1).to(device)  # 0 is fake 
         # x_fake, y_fake = G(z, fake_info).view(-1, space_dimension), torch.zeros(x.size(0), 1).to(device)  # 0 is fake
     D_output = D(x_fake, info.view(-1, 1))
+    # print(D_output.grad_fn)
     # D_output = D(x_fake, fake_info)
     # print(f'D_output: {D_output}, y_fake: {y_fake}')
     
@@ -189,7 +190,8 @@ def train_epoch_optimal(data_loader, D, G, D_optimizer, G_optimizer, criterion, 
     G.eval()
     # if weights_interval:
     
-    weights = weights_variances(G, num_beans = n_split)
+    # weights = weights_variances(G, num_beans = n_split)
+    weights = variance4data(G, data_loader)
     # print(weights)
     
     # print(weights)
@@ -202,20 +204,10 @@ def train_epoch_optimal(data_loader, D, G, D_optimizer, G_optimizer, criterion, 
     for batch_idx, (x, info) in enumerate(data_loader):
         batch_size = x.size(0)
         x, info = x.to(device), info.to(device)
-        # D_loss = D_train(x, info, D, G, D_optimizer, criterion, device, weights_interval = weights_interval)#weights_interval
-        # # Train generator
-        # G_loss = G_train(x, D, G, G_optimizer, criterion, device, weights_interval = weights_interval)#weights_interval
-        
-#         # Train discriminator
-#         D_loss = D_train(x, info, D, G, D_optimizer, criterion, device, weights_interval = weights)#weights_interval
-
-#         # Train generator
-#         G_loss = G_train(x, info, D, G, G_optimizer, criterion, device, weights_interval = weights)#weights_interval
             
         if weights_interval:
             # Train discriminator
             D_loss = D_train(x, info, D, G, D_optimizer, criterion, device, weights_interval = weights)#weights_interval
-
             # Train generator
             G_loss = G_train(x, info, D, G, G_optimizer, criterion, device, weights_interval = weights)#weights_interval
             
@@ -240,12 +232,6 @@ def train_epoch_optimal(data_loader, D, G, D_optimizer, G_optimizer, criterion, 
     # Calculate average loss over all samples
     avg_D_loss = total_D_loss / total_samples
     avg_G_loss = total_G_loss / total_samples
-    
-    # # Step the schedulers if provided
-    # if scheduler_D:
-    #     scheduler_D.step()
-    # if scheduler_G:
-    #     scheduler_G.step()
 
     return avg_D_loss, avg_G_loss, weights
 
@@ -260,12 +246,14 @@ def train(num_epochs,                  # Number of training epochs
           name="generated_plots.png",  # Name of the saved plot file
           weights_interval=False,      # Whether to use weights for training (optional)
           # plot_info = False,           #save or not variance graphs
+          # weights_each_point = False,
           animate_bar_var = False,     #save or not variance bar
           progress_generator = False,  #plot the result of generator every n epoch(fixed 20)
           info_n = 20,                 #write info(metrics, vars and etc.) every info_n epoch
           n_split = 10,                #number of splits
           scheduler_D=None,            # Scheduler for Discriminator optimizer (optional)
           scheduler_G=None,            # Scheduler for Generator optimizer (optional)
+          save_mse = None
          ):
     """
     Returns:
@@ -278,6 +266,7 @@ def train(num_epochs,                  # Number of training epochs
     Variances = []
     weights_var = {}
     create_folder(save_path, name)
+    total_stats = []
 
     for epoch in tqdm(range(num_epochs)):
         # print(f'weights_interval: {weights_interval}')
@@ -290,8 +279,10 @@ def train(num_epochs,                  # Number of training epochs
         G.eval()
         D_losses_final.append(D_loss)
         G_losses_final.append(G_loss)
-        w2i = {v: weights[0][k] for k, v in weights[1].items()}
-        v2i = {v: weights[2][k] for k, v in weights[1].items()}
+        # w2i = {v: weights[0][k] for k, v in weights[1].items()}
+        # v2i = {v: weights[2][k] for k, v in weights[1].items()}
+        stats2 = calculate_metrics(G, D)
+        total_stats.append(stats2)
         """
         going through by bins and get values of variances(or values of weights)
         for theese bins(inetrvals) and save it as
@@ -322,8 +313,8 @@ def train(num_epochs,                  # Number of training epochs
             print(f"epoch [{epoch}/{num_epochs}], average D_loss: {D_loss:.4f}, average G_loss: {G_loss:.4f}")
             if progress_generator:
                 plot_sine(G, save_path=save_path, name = name, epoch = epoch);
-            if animate_bar_var:
-                animated_bar_var_plot(weights_variance = v2i, epoch = epoch, save_path=save_path, name = name, weights_bins = w2i)
+            # if animate_bar_var:
+            #     animated_bar_var_plot(weights_variance = v2i, epoch = epoch, save_path=save_path, name = name, weights_bins = w2i)
             
     if plot_process:
         plot_training_progress(D_losses_final, G_losses_final, Variances, save_path = save_path, name = name);
@@ -337,13 +328,17 @@ def train(num_epochs,                  # Number of training epochs
         file_paths = [os.path.join(save_path, name, f'generated_plots_epoch_{epoch}.png') for epoch in range(0, num_epochs + info_n, info_n)]
         create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='final_generated_plots');
         
-        animated_bar_var_plot(weights_variance = v2i, epoch = epoch + 1, save_path=save_path, name = name, weights_bins = w2i)
-        file_paths = [os.path.join(save_path, name, f'bar_var_{epoch}.png') for epoch in range(0, num_epochs + info_n, info_n)]
-        create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='final_bar_vars');
+        # animated_bar_var_plot(weights_variance = v2i, epoch = epoch + 1, save_path=save_path, name = name, weights_bins = w2i)
+        # file_paths = [os.path.join(save_path, name, f'bar_var_{epoch}.png') for epoch in range(0, num_epochs + info_n, info_n)]
+        # create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='final_bar_vars');
         
-        file_paths = [os.path.join(save_path, name, f'bar_weight_{epoch}.png') for epoch in range(0, num_epochs + info_n, info_n)]
-        create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='final_bar_weights');
+        # file_paths = [os.path.join(save_path, name, f'bar_weight_{epoch}.png') for epoch in range(0, num_epochs + info_n, info_n)]
+        # create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='final_bar_weights');
         
+    if save_mse:
+        from .optimal_batch import append_and_save_mse
+        path_save_mse = os.path.join(save_path, save_mse)
+        append_and_save_mse(G, path_save_mse)
         
         
         
@@ -353,7 +348,7 @@ def train(num_epochs,                  # Number of training epochs
     
 
             
-    return D_losses_final, G_losses_final, Variances, weights_var
+    return D_losses_final, G_losses_final, Variances, weights_var, total_stats
     
 def create_folder(base_path, folder_name):  
     full_path = os.path.join(base_path, folder_name)
