@@ -4,65 +4,162 @@ import numpy as np
 from typing import Dict, Callable, Tuple, List
 import torch
 import torch.nn.functional as F
+import pickle
 
-# def calculate_variance(generator: Callable,
-#                        info_param_1: int = 2 * math.pi,
-#                        info_param_2: int = 0,
-#                        repeat: int = 10, 
-#                        num_samples: int = 1000) -> Tuple[List[float], List[float], List[float]]:
-#     """
-#     Calculate the variance of generated samples for given points.
+def calculate_MSE(generator: Callable,
+                       info_param_1: int = 1.5 * math.pi,
+                       info_param_2: int = 1.5 * math.pi,
+                       num_samples: int = 10000) -> Tuple[List[float], List[float], List[float]]:
+    """
+    Calculate the accuracy of generated samples for given points.
 
-#     Parameters:
-#     - generator: The model function that generates samples.
-#     - info_param_1: The first parameter used for generating information.
-#     - info_param_2: The second parameter used for generating information.
-#     - repeat: Number of repeats for each point.
-#     - num_samples: Number of points to sample.
+    Parameters:
+    - generator: The model function that generates samples.
+    - info_param_1: The first parameter used for generating information.
+    - info_param_2: The second parameter used for generating information.
+    - num_samples: Number of points to sample.
 
-#     Returns:
-#     - Tuple of points and corresponding variances.
-#     """
-#     # Generate random samples in the latent space
-#     latent_space_samples = torch.randn(repeat, 1)
+    Returns:
+    - mse1 for the left part of sine and mse2 for the right part of sine.
+    """
     
-#     # Generate random information for sampling points
-#     # info = info_param_1 * torch.rand(num_samples)
-#     info = torch.linspace(0, info_param_1, num_samples)
-#     if info_param_2:
-#         info -= info_param_2
+    info1 = torch.linspace(0, info_param_1, num_samples)
+    info2 = torch.linspace(info_param_1, info_param_1 + info_param_2, num_samples)
 
+    mse1 = 0.0
+    mse2 = 0.0
+    for p1, p2 in zip(info1, info2):
+        latent_space_sample = torch.randn(1, 1)
+        # Generate samples using the generator model
+        # print(p1, p2)
+        with torch.no_grad():
+            res1, res2 = generator(latent_space_sample, p1.repeat(1, 1)), generator(latent_space_sample, p2.repeat(1, 1))
+            
+        sine_value1, sine_value2  = torch.sin(p1), torch.sin(p2)
+        mse1 += (res1.item() - sine_value1.item())**2
+        mse2 += (res2.item() - sine_value2.item())**2
+        # print(p1, sine_value1, mse1, p2, sine_value2, mse2)
+        
+    mse1 = mse1/num_samples
+    mse2 = mse2/num_samples
+    return mse1, mse2
+
+
+
+import torch
+import math
+from typing import Tuple, List
+
+def calculate_metrics(generator,
+                      discriminator,
+                      info_param_1: float = 1.5 * math.pi,
+                      info_param_2: float = 1.5 * math.pi,
+                      repeat: int = 20,
+                      num_samples: int = 1000) -> Tuple[float, float, float, float, float, float]:
+    """
+    Calculate the accuracy of generated samples for given points.
+
+    Parameters:
+    - generator: The model function that generates samples.
+    - discriminator: The discriminator model.
+    - info_param_1: The first parameter used for generating information.
+    - info_param_2: The second parameter used for generating information.
+    - repeat: Number of times to repeat the generation process.
+    - num_samples: Number of points to sample.
+
+    Returns:
+    - mse1: Mean squared error for the left part of sine.
+    - mse2: Mean squared error for the right part of sine.
+    - var1: Mean variance for the left part of sine.
+    - var2: Mean variance for the right part of sine.
+    - entropy1: Entropy for the left part of sine.
+    - entropy2: Entropy for the right part of sine.
+    """
     
-#     result = []
-#     points = []
-#     result_mean = []
-#     all_res = []
+    info1 = torch.linspace(0, info_param_1, num_samples)
+    info2 = torch.linspace(info_param_1, info_param_1 + info_param_2, num_samples)
+
+    mse1 = 0.0
+    mse2 = 0.0
+    var_1 = 0.0
+    var_2 = 0.0
+    entropy1 = 0.0
+    entropy2 = 0.0
+    latent_space_samples = torch.randn(repeat, 1)  # Pluralize variable name
+
+    for p1, p2 in zip(info1, info2):
+        # Generate samples using the generator model
+        with torch.no_grad():
+            res1 = generator(latent_space_samples, torch.tensor([[p1.item()]] * repeat))
+            res2 = generator(latent_space_samples, torch.tensor([[p2.item()]] * repeat))
+            
+        sine_value1 = torch.sin(p1)
+        sine_value2 = torch.sin(p2)
+        mse1 += torch.mean((res1.squeeze() - sine_value1)**2).item()
+        mse2 += torch.mean((res2.squeeze() - sine_value2)**2).item()
+        
+        var_1 += torch.var(res1.squeeze()).item()  
+        var_2 += torch.var(res2.squeeze()).item() 
+        
+        # Calculate discriminator's output and entropy
+        with torch.no_grad():
+            discriminator_output1 = discriminator(res1, torch.tensor([[p1.item()]] * repeat))
+            discriminator_output2 = discriminator(res2, torch.tensor([[p2.item()]] * repeat))
+            entropy1 += -torch.mean(discriminator_output1 * torch.log(discriminator_output1 + 1e-8) + \
+                                    (1 - discriminator_output1) * torch.log(1 - discriminator_output1 + 1e-8)).item()
+            entropy2 += -torch.mean(discriminator_output2 * torch.log(discriminator_output2 + 1e-8) + \
+                                    (1 - discriminator_output2) * torch.log(1 - discriminator_output2 + 1e-8)).item()
+            
+    # Calculate means
+    mse1 /= num_samples
+    mse2 /= num_samples
+    var_1 /= num_samples
+    var_2 /= num_samples
+    entropy1 /= num_samples
+    entropy2 /= num_samples
     
-#     for el in info:
-#         # Generate samples using the generator model
-#         res = generator(latent_space_samples, el.repeat(repeat, 1))
-#         # Calculate the variance of the generated samples
-#         variance = torch.var(res)
-#         mean = torch.mean(res)
+    return mse1, mse2, var_1, var_2, entropy1, entropy2
+
+
+
+
+def append_and_save_mse(generator: Callable,
+                        file_path: str,
+                        info_param_1: int = 1.5 * math.pi,
+                        info_param_2: int = 1.5 * math.pi,
+                        num_samples: int = 10000,
+                        ) -> None:
+    """
+    Calculate the MSE of generated samples for given parameters,
+    append it to the existing list or create a new one,
+    and save it as a pickle file.
+
+    Parameters:
+    - generator: The model function that generates samples.
+    - info_param_1: The first parameter used for generating information.
+    - info_param_2: The second parameter used for generating information.
+    - num_samples: Number of points to sample.
+    - file_path: Path to the pickle file to save or load the MSE list.
+    """
+    # Calculate the MSE
+    mse1, mse2 = calculate_MSE(generator, info_param_1, info_param_2, num_samples)
+    new_mse = (mse1, mse2)
+    
+    # Try loading the existing G_mse from the pickle file
+    try:
+        with open(file_path, 'rb') as f:
+            G_mse = pickle.load(f)
+    except FileNotFoundError:
+        G_mse = []
+
+    # Append the new MSE to the list
+    G_mse.append(new_mse)
+
+    # Save the updated G_mse as a pickle file
+    with open(file_path, 'wb') as f:
+        pickle.dump(G_mse, f)
+    
         
-#         # Append the variance and corresponding point to the result lists
-#         result.append(variance.item())
-#         points.append(el.item())
-#         result_mean.append(mean.item())
-#         all_res.append(res)
-        
-#     all_res = [el.squeeze().tolist() for el in all_res]
-#     # all_res = [item for sublist in all_res for item in sublist]
-#     # Extracting lists of points
-#     # all_result = []
-#     # all_res = all_res.squeeze().tolist()
-#     # flattened_list = [item for sublist in all_res for item in sublist]
-#     # for tensor in all_res:
-#     #     points_0 = tensor.detach().numpy().flatten().tolist()
-#     #     all_result.append(points_0)
-        
-        
-#     return points, result, result_mean, all_res
 
 def calculate_variance(generator: Callable,
                        info_param_1: int = 3 * math.pi,
@@ -108,7 +205,36 @@ def calculate_variance(generator: Callable,
             result[el.item()]['variance'] = torch.var(res).item()
         
     return result
-        
+
+def variance4data(generator,
+                  data_loader,
+                  repeat: int = 20,
+                  device='cpu'):
+    variances = {}
+    latent_space_samples = torch.randn(repeat, 1)
+    for batch_idx, (x, info) in enumerate(data_loader):
+        batch_size = x.size(0)
+        x, info = x.to(device), info.to(device)
+        for el in info:
+            with torch.no_grad():
+                res = generator(latent_space_samples, el.repeat(repeat, 1))
+                variances[el.item()] = torch.var(res).item()
+                
+    def variances2weights(variances: dict):
+        """
+        Convert dict of variances to dict of weights,
+        so, the max weight is 1 for max value of variances and 0 if variance is 0
+        """
+        max_variance = max(variances.values())
+        weights = {key: max(0.01, value / max_variance) for key, value in variances.items()} 
+        # print(weights)
+        return weights
+
+
+    return variances2weights(variances)
+    
+
+                       
     
 def create_batch(Generator,
                  batch_size:int,
@@ -230,6 +356,50 @@ class WeightedIntervalCrossEntropyLoss(torch.nn.Module):
             loss = F.binary_cross_entropy(y_pred, y_true, weight=weights.unsqueeze(-1))
         except Exception as e:
             print(f'y_pred: {y_pred}, y_true: {y_true}, weights: {weights.unsqueeze(-1)}')
+            print(e)
+            raise
+            
+
+        return loss
+    
+    
+    
+class WeightedVarianceCrossEntropyLoss(torch.nn.Module):
+    def __init__(self):
+        # super(WeightedIntervalCrossEntropyLoss, self).__init__()
+        super().__init__()
+
+    def weights4batch(self, weights: Dict[int, float], conditional_info: torch.Tensor) -> torch.Tensor:
+
+        """
+        Assign weights for every point based on conditional information and bins.
+
+        Args:
+        - weights (dict): Weights for every point.
+        - conditional_info (torch.Tensor): Tensor with conditional information (coordinate x of sine).
+
+        Returns:
+        - torch.tensor: Weights for every point in batch that we have in condition.
+        """
+        batch_weights = []
+        for el in conditional_info:
+            # print(el)
+            batch_weights.append(weights[el.item()])
+            
+        return torch.tensor(batch_weights)
+
+    def forward(self, y_pred, y_true, weights, conditional_info, from_logits=False):
+        weights = self.weights4batch(weights,
+                                     conditional_info)
+
+        if from_logits:
+            y_pred = F.softmax(y_pred, dim=-1)
+
+        y_pred = torch.clamp(y_pred, 1e-7, 1 - 1e-7)
+        try:
+            loss = F.binary_cross_entropy(y_pred, y_true, weight=weights.unsqueeze(-1))
+        except Exception as e:
+            print(f'y_pred: {y_pred}, y_true: {y_true}, weights: {weights}')
             print(e)
             raise
             
