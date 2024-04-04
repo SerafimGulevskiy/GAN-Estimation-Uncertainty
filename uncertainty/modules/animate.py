@@ -169,6 +169,7 @@ def create_gif(file_paths, gif_path, save_path, name, duration, loop=0):
 
     def update(i):
         ims.set_array(images[i])
+        # plt.text(0.5, 0.5, str(i), fontsize=24, color='white', ha='center', va='center')  # Overlay number
 
     ani = FuncAnimation(plt.gcf(), update, frames=len(images), interval=duration, repeat_delay=1000)
     

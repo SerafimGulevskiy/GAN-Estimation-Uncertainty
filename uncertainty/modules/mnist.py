@@ -3,16 +3,22 @@ import torch.nn as nn
 import torchvision
 from torchvision.transforms import ToTensor, Normalize, Compose
 from torchvision.datasets import MNIST
+from torch.utils.data import Dataset, DataLoader
 
 import numpy as np
 import os
 from tqdm import tqdm
 
-from .mnist_animate import generate_and_save_fake_image_grid
-from .animate import create_gif, plot_training_progress
+from .mnist_animate import generate_and_save_fake_image_grid, plot_training_progress, plot_training_fid
+from .animate import create_gif
+from .mnist_classifier import calculate_confusion_matrix
+
+from .mnist_classifier import eval_model
+
+LATENT_DIM = 100
 
 class Generator(nn.Module):
-    def __init__(self, latent_dim=100, image_shape=(1, 28, 28)):
+    def __init__(self, latent_dim=LATENT_DIM, image_shape=(1, 28, 28)):
         super().__init__()
         self.latent_dim = latent_dim
         self.image_shape = image_shape
@@ -23,8 +29,8 @@ class Generator(nn.Module):
             layers = [nn.Linear(in_features, out_features)]
             if normalize:
                 layers.append(nn.BatchNorm1d(out_features, 0.8))
-            # layers.append(nn.LeakyReLU(0.2, inplace=True))
-            layers.append(nn.GELU())
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            # layers.append(nn.GELU())
             return layers
     
     
@@ -37,14 +43,7 @@ class Generator(nn.Module):
             nn.Linear(1024, 784),
             nn.Tanh()
         )
-        # self.model = nn.Sequential(
-        #     *block(self.latent_dim + 10, 1024),
-        #     # *block(128, 256),
-        #     # *block(256, 512),
-        #     # *block(512, 1024),
-        #     nn.Linear(1024, 784),
-        #     nn.Tanh()
-        # )
+
 
     def forward(self, noise, labels):
         labels_embs = self.label_embedding(labels)
@@ -62,10 +61,11 @@ class Discriminator(nn.Module):
         
         def block(in_features, out_features, dropout = 0.3):
             layers = [nn.Linear(in_features, out_features)]
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            # layers.append(nn.GELU())
             if dropout:
                 layers.append(nn.Dropout(dropout))
-            # layers.append(nn.LeakyReLU(0.2, inplace=True))
-            layers.append(nn.GELU())
+            
             return layers
         
         self.model = nn.Sequential(
@@ -75,27 +75,7 @@ class Discriminator(nn.Module):
             nn.Linear(512, 1),
             nn.Sigmoid()
         )
-        
-        # self.model = nn.Sequential(
-        #     *block(10 + int(np.prod(self.image_shape)) , 256),
-        #     nn.Linear(256, 1),
-        #     nn.Sigmoid()
-        # )
-            
-        # self.model = nn.Sequential(
-        #     # nn.Linear(int(torch.prod(torch.tensor(self.image_shape))), 512),
-        #     nn.Linear(10 + int(np.prod(self.image_shape)) , 1024),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(1024, 512),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(512, 256),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(256, 1),
-        #     nn.Sigmoid()
-        # )
+
 
     def forward(self, img, labels):
         x = img.view(img.size(0), -1)
@@ -230,17 +210,21 @@ def train(num_epochs,                  # Number of training epochs
           D_optimizer, G_optimizer,    # Optimizers for D and G
           criterion,                   # Loss function criterion
           device,                      # Device to perform training on (e.g., 'cuda' or 'cpu')
-          plot_process=False,          # Whether to plot the training process
-          save_path=None,              # Path to save the plots (if plotting is enabled)
-          name="generated_plots.png",  # Name of the saved plot file
-          weights_interval=False,      # Whether to use weights for training (optional)
+          plot_process = False,          # Whether to plot the training process
+          save_path = None,              # Path to save the plots (if plotting is enabled)
+          name = "generated_plots.png",  # Name of the saved plot file
+          weights_interval = False,      # Whether to use weights for training (optional)
           # plot_info = False,           #save or not variance graphs
           animate_bar_var = False,     #save or not variance bar
           progress_generator = False,  #plot the result of generator every n epoch(fixed 20)
           info_n = 20,                 #write info(metrics, vars and etc.) every info_n epoch
           n_split = 10,                #number of splits
-          scheduler_D=None,            # Scheduler for Discriminator optimizer (optional)
-          scheduler_G=None,            # Scheduler for Generator optimizer (optional)
+          scheduler_D = None,            # Scheduler for Discriminator optimizer (optional)
+          scheduler_G = None,            # Scheduler for Generator optimizer (optional)
+          classifier = None,            #classifier to watch its accuracy and fid over the training
+          accuracy = None,
+          fid = None,
+          fid_dataset = None
          ):
     """
     Returns:
@@ -251,11 +235,16 @@ def train(num_epochs,                  # Number of training epochs
     D_losses_final = []
     G_losses_final = []
     Variances = []
+    classifier_res = {'loss_CE': [], 'accuracy': [], 'FID_cats': [], 'vFID_cats': []}
     weights_var = {}
     
     
     if save_path:
         create_folder(save_path, name)
+    
+    if fid and classifier and fid_dataset:
+        from .fid import split_mnist_cats, calculate_multiple_fid
+        category_data_real = split_mnist_cats(fid_dataset)
 
     for epoch in tqdm(range(num_epochs)):
         # print(f'weights_interval: {weights_interval}')
@@ -268,6 +257,29 @@ def train(num_epochs,                  # Number of training epochs
         G.eval()
         D_losses_final.append(D_loss)
         G_losses_final.append(G_loss)
+        if classifier:
+            fake_loader = get_fake_dataloader(G,
+                                              device,
+                                              batch_size=32,
+                                              num_examples_per_class=1000,
+                                              noise_dim=LATENT_DIM,
+                                              shuffle=True)
+            
+            loss_test, accuracy_test = eval_model(fake_loader,
+                                      classifier,
+                                      criterion = nn.CrossEntropyLoss(),
+                                      device = device)
+            
+            classifier_res['loss_CE'].append(loss_test)
+            classifier_res['accuracy'].append(accuracy_test)
+            if fid and classifier and fid_dataset:
+                fid_cats, vfid_cats = calculate_multiple_fid(G, classifier, category_data_real, device)
+                # print(fid_cats, vfid_cats)
+                classifier_res['FID_cats'].append(fid_cats)
+                classifier_res['vFID_cats'].append(vfid_cats)
+# print(loss_test, accuracy_test)
+            
+            
         # w2i = {v: weights[0][k] for k, v in weights[1].items()}
         # v2i = {v: weights[2][k] for k, v in weights[1].items()}
         """
@@ -277,8 +289,18 @@ def train(num_epochs,                  # Number of training epochs
         """
         if epoch % info_n == 0: 
             print(f"epoch [{epoch}/{num_epochs}], average D_loss: {D_loss:.4f}, average G_loss: {G_loss:.4f}")
+            if classifier:
+                print(f"calssifier: loss CE -- {loss_test}, accuracy -- {accuracy_test}")
+                
+                calculate_confusion_matrix(classifier,
+                                           fake_loader,
+                                           device,
+                                           epoch,
+                                           save_path = save_path,
+                                           name = name)
             if progress_generator:
                 generate_and_save_fake_image_grid(G, save_path=save_path, name = name, epoch = epoch);
+                
     # if save_path:
     #     generate_and_save_fake_image_grid(G, save_path=save_path, name = name, epoch = epoch);
         # print(f'w2i and v2i: {w2i}, {v2i}')
@@ -299,12 +321,37 @@ def train(num_epochs,                  # Number of training epochs
         # Variances.append(np.max(var))
         
     if plot_process:
-        plot_training_progress(D_losses_final, G_losses_final, Variances, save_path = save_path, name = name);
+        plot_training_progress(D_losses_final,
+                               G_losses_final,
+                               Variances,
+                               classifier_res,
+                               save_path = save_path,
+                               name = name);
+        if fid and classifier and fid_dataset:
+            print('classifier_res', classifier_res)
+            plot_training_fid( classifier_res,
+                               save_path = save_path,
+                               name = name)
         
     if progress_generator:
-        generate_and_save_fake_image_grid(G, save_path=save_path, name = name, epoch = epoch + 1);
+        
+        generate_and_save_fake_image_grid(G,
+                                          save_path=save_path,
+                                          name = name,
+                                          epoch = epoch + 1);
         file_paths = [os.path.join(save_path, name, f'fake_images_{epoch}.png') for epoch in range(0, num_epochs + info_n, info_n)]
         create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='generated_images_grid');
+        
+    if classifier:
+        calculate_confusion_matrix(classifier,
+                                           fake_loader,
+                                           device,
+                                           epoch = epoch + 1,
+                                           save_path = save_path,
+                                           name = name)
+        file_paths = [os.path.join(save_path, name, f'cm_epoch_{epoch}.png') for epoch in range(0, num_epochs + info_n, info_n)]
+        create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='cm_res_grid');
+        
 
             
     return D_losses_final, G_losses_final
@@ -317,3 +364,45 @@ def create_folder(base_path, folder_name):
         print(f"Folder '{folder_name}' created at '{base_path}'.")
     else:
         pass
+
+class FakeDataset(Dataset):
+    def __init__(self, generator, device, num_examples_per_class=1000, noise_dim=LATENT_DIM):
+        self.generator = generator
+        self.device = device
+        self.num_examples_per_class = num_examples_per_class
+        self.noise_dim = noise_dim
+        self.data = []
+        self.labels = []
+
+        # Function to generate fake samples for a given class
+        def generate_fake_samples(num_samples, class_label):
+            z = torch.randn(num_samples, self.noise_dim).to(device)
+            labels = torch.full((num_samples,), class_label).to(device)
+            with torch.no_grad():
+                fake_images = self.generator(z, labels).to(device)  # Move images to CPU for compatibility with torchvision datasets
+            fake_images = fake_images.view(-1, 1, 28, 28)# Reshape each image to have size (1, 28, 28)
+            return fake_images, labels
+
+        # Generate fake dataset for each class
+        for class_label in range(10):
+            fake_images, labels = generate_fake_samples(self.num_examples_per_class, class_label)
+            self.data.append(fake_images)
+            self.labels.append(labels)
+
+        self.data = torch.cat(self.data, dim=0)
+        self.labels = torch.cat(self.labels, dim=0)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], self.labels[idx]
+    
+    
+def get_fake_dataloader(generator, device,
+                        batch_size=32, num_examples_per_class=1000,
+                        noise_dim=LATENT_DIM, shuffle=True):
+    fake_dataset = FakeDataset(generator, device, num_examples_per_class, noise_dim)
+    fake_dataloader = DataLoader(fake_dataset, batch_size=batch_size, shuffle=shuffle)
+    return fake_dataloader
+
