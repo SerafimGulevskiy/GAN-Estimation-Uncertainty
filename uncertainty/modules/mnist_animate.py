@@ -55,7 +55,7 @@ def generate_and_save_fake_image_grid(G, save_path: str, name: str, epoch: int, 
     plt.close() 
     
     
-def plot_training_progress(D_losses, G_losses, variances, classifier_res, save_path, name):
+def plot_training_progress(D_losses, G_losses, variances, classifier_res, save_path, name, metrics_name = 'process.png'):
     plt.figure(figsize=(12, 6))
     plt.subplot(1, 2, 1)
     plt.plot(D_losses, label='Discriminator')
@@ -77,7 +77,7 @@ def plot_training_progress(D_losses, G_losses, variances, classifier_res, save_p
         plt.legend()
 
     if save_path:
-        save_filename = os.path.join(save_path, name,  'process')
+        save_filename = os.path.join(save_path, name,  metrics_name)
         plt.savefig(save_filename, dpi=300)
 
     plt.tight_layout()
@@ -95,7 +95,7 @@ def plot_training_fid(classifier_res, save_path, name):
     plt.xlabel("Epoch")
     plt.ylabel("FID Score")
     plt.legend()
-    
+    # plt.ylim(0, 1000)  # Set y-axis limit
     
     plt.subplot(1, 2, 2)
     
@@ -103,11 +103,11 @@ def plot_training_fid(classifier_res, save_path, name):
         values = [d[category] for d in classifier_res['vFID_cats']]
         plt.plot(values, label=f'Category {category}')
 
-    plt.title("FID for each category")
+    plt.title("vFID for each category")
     plt.xlabel("Epoch")
     plt.ylabel("vFID Score")
     plt.legend()
-    
+    # plt.ylim(0, 100)  # Set y-axis limit
         
 
     if save_path:

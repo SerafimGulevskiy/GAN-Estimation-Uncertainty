@@ -15,6 +15,8 @@ from .mnist_classifier import calculate_confusion_matrix
 
 from .mnist_classifier import eval_model
 
+from .weighted_bce import normilize_weights_mnist
+
 LATENT_DIM = 100
 
 class Generator(nn.Module):
@@ -25,10 +27,10 @@ class Generator(nn.Module):
         
         self.label_embedding = nn.Embedding(num_embeddings = 10, embedding_dim = 10)#first param is num_embeddings means number of claases, for every class we train embeddings, embedding_dim is merely a dimension of embedding
         
-        def block(in_features, out_features, normalize=False):
+        def block(in_features, out_features, normalize=True):
             layers = [nn.Linear(in_features, out_features)]
             if normalize:
-                layers.append(nn.BatchNorm1d(out_features, 0.8))
+                layers.append(nn.BatchNorm1d(out_features))
             layers.append(nn.LeakyReLU(0.2, inplace=True))
             # layers.append(nn.GELU())
             return layers
@@ -59,8 +61,10 @@ class Discriminator(nn.Module):
         self.image_shape = image_shape
         self.label_embedding = nn.Embedding(10, 10)
         
-        def block(in_features, out_features, dropout = 0.3):
+        def block(in_features, out_features, dropout = 0.3, normalize = False):
             layers = [nn.Linear(in_features, out_features)]
+            if normalize:
+                layers.append(nn.BatchNorm1d(out_features))
             layers.append(nn.LeakyReLU(0.2, inplace=True))
             # layers.append(nn.GELU())
             if dropout:
@@ -93,19 +97,22 @@ def D_train(
         D_optimizer,
         criterion,
         device,
-        space_dimension = 1,
         noise_dim = 100,
-        weights_interval = None
+        weights_bce = None
 ):
 
     D.zero_grad()
     # Train discriminator on real data
     x_real, y_real = x.to(device), torch.ones(x.size(0)).to(device)  # 1 is real
-    
+    # if weights_bce:
+    #     print('33333333333')
+    # else:
+    #     print('3-3-3-3-3')
+        
     # print(x_real, y_real, info)
     D_output = D(x_real, info)
     # print(x_real.size(), info.size(), y_real.size())
-    D_real_loss = criterion(D_output, y_real)
+    D_real_loss = criterion(D_output, y_real, weights_bce, info)
     D_real_score = D_output
 
     # Train discriminator on fake data
@@ -117,7 +124,7 @@ def D_train(
 
     D_output = D(x_fake, info)
 
-    D_fake_loss = criterion(D_output, y_fake)#train discriminator to find fake results 
+    D_fake_loss = criterion(D_output, y_fake, weights_bce, info)#train discriminator to find fake results 
     D_fake_score = D_output
 
     # Calculate the total discriminator loss
@@ -138,9 +145,8 @@ def G_train(
         G_optimizer,
         criterion,
         device,
-        space_dimension = 1,
         noise_dim = 100,
-        weights_interval = None
+        weights_bce = None
 ):
     # print(f'G_train size x: {x.size()}')
     G.zero_grad()
@@ -150,7 +156,7 @@ def G_train(
     G_output = G(z, info).to(device)
     
     D_output = D(G_output, info)
-    G_loss = criterion(D_output, y.to(device))
+    G_loss = criterion(D_output, y.to(device), weights_bce, info)
     
     # gradient backprop & optimize ONLY G's parameters
     G_loss.backward()
@@ -159,14 +165,75 @@ def G_train(
     return G_loss.data.item()
 
 
+class DWrapper:
+    def __init__(self, model, layer_index=-1, use_global_pooling=False):
+        self.model = model
+        self.activation = {}
+        self.base_transform = torchvision.transforms.Compose([
+                            torchvision.transforms.ToTensor(),
+                            torchvision.transforms.Normalize(mean=(0.5,), std=(0.5,))
+                        ])
+        self.layer_index = layer_index
+        self.use_global_pooling = use_global_pooling
+        self.hook_handle = None  # Variable to store hook handle
 
-def train_epoch_optimal(data_loader, D, G, D_optimizer, G_optimizer, criterion, device, n_split, weights_interval = False, scheduler_D=None, scheduler_G=None):
+    def get_activation(self, name):
+        def hook(model, input, output):
+            self.activation[name] = output.detach()
+        return hook
+    
+    def preprocess_image(self, image):
+        # Apply transformations to the image
+        preprocessed_image = self.base_transform(image)
+        return preprocessed_image
+
+    def register_hook(self):
+        self.hook_handle = self.model.model[self.layer_index].register_forward_hook(self.get_activation('extract'))
+
+    def remove_hook(self):
+        if self.hook_handle is not None:
+            self.hook_handle.remove()
+            self.hook_handle = None
+
+    def __call__(self, image, info, transform=False):
+        if transform:
+            image = self.preprocess_image(image)
+        output = self.model(image, info)
+        output = self.activation['extract']
+        
+        if self.use_global_pooling:
+            output = F.adaptive_avg_pool2d(output, (1, 1))
+
+        output = output.view(output.size(0), -1)  # Flatten to (batch_size, num_channels)
+        return output
+    
+def train_epoch_optimal(data_loader, D, G, D_optimizer, G_optimizer, criterion, device, n_split, weights_bce = None, scheduler_D=None, scheduler_G=None):
     # D.eval()
     # G.eval()
-    # if weights_interval:
     
     # weights = weights_variances(G, num_beans = n_split)
     # print(weights)
+    # if weights_bce:
+    #     print('2222222222222')
+    # else:
+    #     print('2-2-2-2-2')
+    
+        # weights = weights_variances(G, num_beans = n_split)
+    # weights = variance4data(G, data_loader)
+    # FEATURE_EXTRACTOR = DWrapper(D, layer_index = -6, use_global_pooling = False)
+    
+    # FEATURE_EXTRACTOR = DWrapper(D, layer_index = -6, use_global_pooling = False)
+    # FEATURE_EXTRACTOR.register_hook()  # Register the hook
+    # if weights_bce:
+    #     weights_bce = nvariance4data(G, FEATURE_EXTRACTOR, data_loader)
+    # # weights = nvariance4data(G, FEATURE_EXTRACTOR, data_loader)
+    # FEATURE_EXTRACTOR.remove_hook()  # Remove the hook when done
+    
+    # FEATURE_EXTRACTOR = DWrapper(G, layer_index=-2, use_global_pooling=False)
+    # FEATURE_EXTRACTOR.register_hook() 
+    # weights = gnvariance4data(G, data_loader)
+    # FEATURE_EXTRACTOR.remove_hook()
+    
     
     # print(weights)
     total_D_loss = 0.0
@@ -179,10 +246,13 @@ def train_epoch_optimal(data_loader, D, G, D_optimizer, G_optimizer, criterion, 
         batch_size = x.size(0)
         x, info = x.to(device), info.to(device)
         # Train discriminator
-        D_loss = D_train(x, info, D, G, D_optimizer, criterion, device)
+        D_loss = D_train(x, info, D, G, D_optimizer, criterion, device, weights_bce = weights_bce)
+        
 
+        
+        
         # Train generator
-        G_loss = G_train(x, info, D, G, G_optimizer, criterion, device)
+        G_loss = G_train(x, info, D, G, G_optimizer, criterion, device, weights_bce = weights_bce)
         
         # Step the schedulers if provided
         if scheduler_D:
@@ -213,7 +283,7 @@ def train(num_epochs,                  # Number of training epochs
           plot_process = False,          # Whether to plot the training process
           save_path = None,              # Path to save the plots (if plotting is enabled)
           name = "generated_plots.png",  # Name of the saved plot file
-          weights_interval = False,      # Whether to use weights for training (optional)
+          weights_bce = False,        # Whether to use weights for training (optional)
           # plot_info = False,           #save or not variance graphs
           animate_bar_var = False,     #save or not variance bar
           progress_generator = False,  #plot the result of generator every n epoch(fixed 20)
@@ -224,7 +294,8 @@ def train(num_epochs,                  # Number of training epochs
           classifier = None,            #classifier to watch its accuracy and fid over the training
           accuracy = None,
           fid = None,
-          fid_dataset = None
+          fid_dataset = None, 
+          test_fid = False
          ):
     """
     Returns:
@@ -242,26 +313,60 @@ def train(num_epochs,                  # Number of training epochs
     if save_path:
         create_folder(save_path, name)
     
-    if fid and classifier and fid_dataset:
-        from .fid import split_mnist_cats, calculate_multiple_fid
-        category_data_real = split_mnist_cats(fid_dataset)
+    if fid and classifier and fid_dataset:#calculat
+        from .fid import split_mnist_cats, calculate_multiple_fid, split_mnist_loader_cats
+        from modules.mnist_models import CNNClassifierWrapper
+        D.eval()
+        G.eval()
+        # category_data_real = split_mnist_cats(fid_dataset)
+        category_data_real = split_mnist_loader_cats(fid_dataset, max_images = None)
+        
+        # FEATURE_EXTRACTOR = CNNClassifierWrapper(classifier, layer_index = -6, use_global_pooling = False)
+        # FEATURE_EXTRACTOR.register_hook()
+        
+        FEATURE_EXTRACTOR = DWrapper(D, layer_index = -5, use_global_pooling = False)
+        FEATURE_EXTRACTOR.register_hook()  # Register the hook
+
+    
+    
+        # if weights_bce:
+        fid_cats, vfid_cats = calculate_multiple_fid(G, FEATURE_EXTRACTOR, category_data_real, device)
+        classifier_res['FID_cats'].append(fid_cats)
+        classifier_res['vFID_cats'].append(vfid_cats)#only the second part of FID
+        print(fid_cats, vfid_cats)
+        
+        
+        if weights_bce:
+            weights_bce = normilize_weights_mnist(fid_cats)
+            # weights_bce = normilize_weights_mnist(vfid_cats)
+            print('weights_bce', weights_bce)
+            if weights_bce:
+                print('1111111111')
+                FEATURE_EXTRACTOR.remove_hook()  # Remove the hook when done
+
 
     for epoch in tqdm(range(num_epochs)):
+        # print(weights_bce)
+            
         # print(f'weights_interval: {weights_interval}')
         D_loss, G_loss = train_epoch_optimal(data_loader,
                     D, G,
                     D_optimizer, G_optimizer,
-                    criterion, device, n_split, weights_interval,
+                    criterion, device, n_split, weights_bce = weights_bce,
                     scheduler_D=scheduler_D, scheduler_G=scheduler_G)
         D.eval()
         G.eval()
+        if weights_bce:
+            print('adjusting weights')
+        else:
+            print('without weights')
         D_losses_final.append(D_loss)
         G_losses_final.append(G_loss)
         if classifier:
             fake_loader = get_fake_dataloader(G,
                                               device,
                                               batch_size=32,
-                                              num_examples_per_class=1000,
+                                              # num_examples_per_class=1000,
                                               noise_dim=LATENT_DIM,
                                               shuffle=True)
             
@@ -273,10 +378,17 @@ def train(num_epochs,                  # Number of training epochs
             classifier_res['loss_CE'].append(loss_test)
             classifier_res['accuracy'].append(accuracy_test)
             if fid and classifier and fid_dataset:
-                fid_cats, vfid_cats = calculate_multiple_fid(G, classifier, category_data_real, device)
+                FEATURE_EXTRACTOR = DWrapper(D, layer_index = -5, use_global_pooling = False)
+                FEATURE_EXTRACTOR.register_hook()  # Register the hook
+                fid_cats, vfid_cats = calculate_multiple_fid(G, FEATURE_EXTRACTOR, category_data_real, device)
                 # print(fid_cats, vfid_cats)
                 classifier_res['FID_cats'].append(fid_cats)
                 classifier_res['vFID_cats'].append(vfid_cats)
+                if weights_bce:
+                    print('000')
+                    weights_bce = normilize_weights_mnist(fid_cats)
+                    # weights_bce = normilize_weights_mnist(vfid_cats)
+                    FEATURE_EXTRACTOR.remove_hook()  # Remove the hook when done
 # print(loss_test, accuracy_test)
             
             
@@ -300,25 +412,7 @@ def train(num_epochs,                  # Number of training epochs
                                            name = name)
             if progress_generator:
                 generate_and_save_fake_image_grid(G, save_path=save_path, name = name, epoch = epoch);
-                
-    # if save_path:
-    #     generate_and_save_fake_image_grid(G, save_path=save_path, name = name, epoch = epoch);
-        # print(f'w2i and v2i: {w2i}, {v2i}')
-#         for k, v in v2i.items():#for k, v in w2i.items(): if you want to check weights, put w2i
-#             if k not in weights_var:
-#                 weights_var[k] = []
-            
-#             weights_var[k].append(v)
-        # print(weights_var)
-        
-        # b, var, mean, generated = calculate_variance(G, repeat = 10, num_samples = 1000)
-        
 
-        
-        # b, generated, var = zip(*[(k, el['G'], el['variance']) for k, el in result.items()])
-            
-        # Variances.append(np.mean(var))
-        # Variances.append(np.max(var))
         
     if plot_process:
         plot_training_progress(D_losses_final,
@@ -326,9 +420,10 @@ def train(num_epochs,                  # Number of training epochs
                                Variances,
                                classifier_res,
                                save_path = save_path,
-                               name = name);
+                               name = name,
+                               metrics_name = f'process__accuracy_test_{accuracy_test:.4f}__loss_test_{loss_test:.4f}.png');
         if fid and classifier and fid_dataset:
-            print('classifier_res', classifier_res)
+            # print('classifier_res', classifier_res)
             plot_training_fid( classifier_res,
                                save_path = save_path,
                                name = name)
@@ -353,7 +448,20 @@ def train(num_epochs,                  # Number of training epochs
         create_gif(file_paths, save_path = save_path, name = name, duration = num_epochs, gif_path='cm_res_grid');
         
 
+    if test_fid:
+        import pickle
+        category_data_real = split_mnist_loader_cats(fid_dataset, max_images = None)
+        fid_cats, vfid_cats = calculate_multiple_fid(G, FEATURE_EXTRACTOR, category_data_real, device)
+        
+        fid_test_path = os.path.join(save_path, name, f'fid_test.pickle')
+        with open(fid_test_path, 'wb') as f:
+            pickle.dump(list(fid_cats.items()), f)
             
+        vfid_test_path = os.path.join(save_path, name, f'vfid_test.pickle')  
+        with open(vfid_test_path, 'wb') as f:
+            pickle.dump(list(vfid_cats.items()), f)
+        # fid_test_each_cat(fid_dataset)
+    
     return D_losses_final, G_losses_final
     
 def create_folder(base_path, folder_name):  
@@ -405,4 +513,6 @@ def get_fake_dataloader(generator, device,
     fake_dataset = FakeDataset(generator, device, num_examples_per_class, noise_dim)
     fake_dataloader = DataLoader(fake_dataset, batch_size=batch_size, shuffle=shuffle)
     return fake_dataloader
+
+
 

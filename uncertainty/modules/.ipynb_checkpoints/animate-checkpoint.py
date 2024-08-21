@@ -129,12 +129,32 @@ def plot_sine(G, epoch, name, num_samples = 10000, save_path = None):
     plt.xlabel('Info')
     plt.ylabel('Generated Samples')
     plt.title(f'Generated Samples, epoch {epoch}')
-    x_values = np.linspace(0, 2 * np.pi, 100)
-    sin_values = np.sin(info)
-    plt.plot(info, sin_values.squeeze(), label='sin(x)', linestyle='-', linewidth=2, color = 'r') 
+    # x_values = np.linspace(0, 2 * np.pi, 100)
+    # sin_values = np.sin(info)
+    
+    # Plot for the range from 0 to 3*pi
+    x_values = np.linspace(0, 3 * np.pi, 100)
+    sin_values = np.sin(x_values)
+    plt.plot(x_values, sin_values, label='sin(x)', linestyle='-', linewidth=2, color='black') 
+
+    # Plot for the range from -2*pi to 0 and from 3*pi to 4.5*pi
+    x_values_left = np.linspace(-2 * np.pi, 0, 100)
+    sin_values_left = np.sin(x_values_left)
+    plt.plot(x_values_left, sin_values_left, label='sin(x)', linestyle='-', linewidth=2, color='g') 
+
+    x_values_right = np.linspace(3 * np.pi, 4.5 * np.pi, 100)
+    sin_values_right = np.sin(x_values_right)
+    plt.plot(x_values_right, sin_values_right, label='sin(x)', linestyle='-', linewidth=2, color='g') 
+    
+    
+    
+    # plt.plot(info, sin_values.squeeze(), label='sin(x)', linestyle='-', linewidth=2, color = 'r') 
 
     plt.plot(info, mean, label='mean(G)', linestyle='-', linewidth=2, color = 'b')
     plt.fill_between(info, p1, p2, alpha=0.9)
+    
+    plt.ylim(-1.5, 1.5)
+
     
     if save_path is not None:
         # Save the figure in the specified folder
@@ -169,6 +189,7 @@ def create_gif(file_paths, gif_path, save_path, name, duration, loop=0):
 
     def update(i):
         ims.set_array(images[i])
+        # plt.text(0.5, 0.5, str(i), fontsize=24, color='white', ha='center', va='center')  # Overlay number
 
     ani = FuncAnimation(plt.gcf(), update, frames=len(images), interval=duration, repeat_delay=1000)
     

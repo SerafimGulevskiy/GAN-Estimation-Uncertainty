@@ -233,7 +233,68 @@ def variance4data(generator,
 
     return variances2weights(variances)
     
+def nvariance4data(generator,
+                   discriminator_wrapper,
+                   data_loader,
+                   repeat: int = 20,
+                   device='cpu'):
+    variances = {}
+    latent_space_samples = torch.randn(repeat, 1)
+    for batch_idx, (x, info) in enumerate(data_loader):
+        batch_size = x.size(0)
+        x, info = x.to(device), info.to(device)
+        for el in info:
+            with torch.no_grad():
+                res = generator(latent_space_samples, el.repeat(repeat, 1))
+                # print()
+                res = discriminator_wrapper(res, el.repeat(repeat, 1))
+                variance = torch.var(res, dim=0)
+                variances[el.item()] = torch.sum(variance).item()
+                
+                
+    def variances2weights(variances: dict):
+        """
+        Convert dict of variances to dict of weights,
+        so, the max weight is 1 for max value of variances and 0 if variance is 0
+        """
+        max_variance = max(variances.values())
+        weights = {key: max(0.01, value / max_variance) for key, value in variances.items()} 
+        # print(weights)
+        return weights
 
+
+    return variances2weights(variances)
+
+def gnvariance4data(generator_wrapper,
+                   data_loader,
+                   repeat: int = 20,
+                   device='cpu'):
+    variances = {}
+    latent_space_samples = torch.randn(repeat, 1)
+    for batch_idx, (x, info) in enumerate(data_loader):
+        batch_size = x.size(0)
+        x, info = x.to(device), info.to(device)
+        for el in info:
+            with torch.no_grad():
+                res = generator_wrapper(latent_space_samples, el.repeat(repeat, 1))
+                # print()
+                # res = discriminator_wrapper(res, el.repeat(repeat, 1))
+                variance = torch.var(res, dim=0)
+                variances[el.item()] = torch.sum(variance).item()
+                
+                
+    def variances2weights(variances: dict):
+        """
+        Convert dict of variances to dict of weights,
+        so, the max weight is 1 for max value of variances and 0 if variance is 0
+        """
+        max_variance = max(variances.values())
+        weights = {key: max(0.01, value / max_variance) for key, value in variances.items()} 
+        # print(weights)
+        return weights
+
+
+    return variances2weights(variances)
                        
     
 def create_batch(Generator,
@@ -405,3 +466,6 @@ class WeightedVarianceCrossEntropyLoss(torch.nn.Module):
             
 
         return loss
+    
+    
+    

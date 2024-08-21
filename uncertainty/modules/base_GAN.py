@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 
-from .optimal_batch import calculate_variance, weights_variances, calculate_metrics, variance4data
+from .optimal_batch import calculate_variance, weights_variances, calculate_metrics, variance4data, nvariance4data, gnvariance4data
 from .animate import plot_sine, plot_training_progress, animated_bar_var_plot, create_gif
 
 
@@ -192,6 +192,17 @@ def train_epoch_optimal(data_loader, D, G, D_optimizer, G_optimizer, criterion, 
     
     # weights = weights_variances(G, num_beans = n_split)
     weights = variance4data(G, data_loader)
+    # FEATURE_EXTRACTOR = DWrapper(D, layer_index = -6, use_global_pooling = False)
+    
+    # FEATURE_EXTRACTOR = DWrapper(D, layer_index = -6, use_global_pooling = False)
+    # FEATURE_EXTRACTOR.register_hook()  # Register the hook
+    # weights = nvariance4data(G, FEATURE_EXTRACTOR, data_loader)
+    # FEATURE_EXTRACTOR.remove_hook()  # Remove the hook when done
+    
+    # FEATURE_EXTRACTOR = DWrapper(G, layer_index=-2, use_global_pooling=False)
+    # FEATURE_EXTRACTOR.register_hook() 
+    # weights = gnvariance4data(G, data_loader)
+    # FEATURE_EXTRACTOR.remove_hook()
     # print(weights)
     
     # print(weights)
@@ -360,3 +371,84 @@ def create_folder(base_path, folder_name):
         pass
 
 
+    
+# class DWrapper:
+#     def __init__(self, model, layer_index=-1, use_global_pooling=False):
+#         self.model = model
+#         self.activation = {}
+#         self.base_transform = torchvision.transforms.Compose([
+#                             torchvision.transforms.ToTensor(),
+#                             torchvision.transforms.Normalize(mean=(0.5,), std=(0.5,))
+#                         ])
+#         self.layer_index = layer_index
+#         self.model.model[self.layer_index].register_forward_hook(self.get_activation('extract'))
+#         self.use_global_pooling = use_global_pooling
+        
+#     def get_activation(self, name):
+#         def hook(model, input, output):
+#             self.activation[name] = output.detach()
+#         return hook
+    
+#     def preprocess_image(self, image):
+#         # Apply transformations to the image
+#         preprocessed_image = self.base_transform(image)
+#         # .unsqueeze(0)  # Add batch dimension
+#         return preprocessed_image
+
+#     def __call__(self, image, info, transform = False):
+        
+#         # Preprocess the image
+#         if transform:
+#             preprocessed_image = self.preprocess_image(image)
+#         output = self.model(image, info)
+#         output = self.activation['extract']
+        
+#         if self.use_global_pooling:
+#             output = F.adaptive_avg_pool2d(output, (1, 1))
+
+#         output = output.view(output.size(0), -1)  # Flatten to (batch_size, num_channels)
+        
+#         return output
+
+    
+class DWrapper:
+    def __init__(self, model, layer_index=-1, use_global_pooling=False):
+        self.model = model
+        self.activation = {}
+        self.base_transform = torchvision.transforms.Compose([
+                            torchvision.transforms.ToTensor(),
+                            torchvision.transforms.Normalize(mean=(0.5,), std=(0.5,))
+                        ])
+        self.layer_index = layer_index
+        self.use_global_pooling = use_global_pooling
+        self.hook_handle = None  # Variable to store hook handle
+
+    def get_activation(self, name):
+        def hook(model, input, output):
+            self.activation[name] = output.detach()
+        return hook
+    
+    def preprocess_image(self, image):
+        # Apply transformations to the image
+        preprocessed_image = self.base_transform(image)
+        return preprocessed_image
+
+    def register_hook(self):
+        self.hook_handle = self.model.model[self.layer_index].register_forward_hook(self.get_activation('extract'))
+
+    def remove_hook(self):
+        if self.hook_handle is not None:
+            self.hook_handle.remove()
+            self.hook_handle = None
+
+    def __call__(self, image, info, transform=False):
+        if transform:
+            image = self.preprocess_image(image)
+        output = self.model(image, info)
+        output = self.activation['extract']
+        
+        if self.use_global_pooling:
+            output = F.adaptive_avg_pool2d(output, (1, 1))
+
+        output = output.view(output.size(0), -1)  # Flatten to (batch_size, num_channels)
+        return output
